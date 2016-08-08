@@ -23,9 +23,15 @@
 		<f:checkbox default="false" value="${it.acceptSSL}" />
 	</f:entry>
 	
-	<f:entry title="Scan Workspace Directory" field="scanWorkspace">
-		<f:textbox value="${it.scanWorkspace}" />
-	</f:entry>
+	<f:block>
+		<table>	
+			<f:optionalBlock inline="true" field="customWorkspace" name="customWorkspace" title="Set custom output directory" checked="${it.customWorkspace}">
+				<f:entry title="Custom output directory" field="scanWorkspace">
+		    		<f:textbox title="Scan Workspace" name="scanWorkspace" value="${it.scanWorkspace}" />
+				</f:entry>
+			</f:optionalBlock>
+		</table> 
+	</f:block>
 	
 	<f:entry title="Application File" field="applicationFile">
 		<f:textbox value="${it.applicationFile}" />

@@ -14,6 +14,7 @@ import hudson.model.Run;
 import hudson.model.TaskListener;
 import hudson.tasks.Builder;
 import hudson.tasks.BuildStepDescriptor;
+import hudson.tasks.BuildStepMonitor;
 import jenkins.model.Jenkins;
 import jenkins.tasks.SimpleBuildStep;
 import net.sf.json.JSONObject;
@@ -30,19 +31,23 @@ import org.kohsuke.stapler.QueryParameter;
 import javax.annotation.Nonnull;
 import javax.servlet.ServletException;
 
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
+import java.io.FilenameFilter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 
 public class AppScanSourceBuilder extends Builder implements SimpleBuildStep {
 
     private final boolean disableScan;
     private final boolean acceptSSL;
+    private final boolean customWorkspace;//User set workspace for ozasmt file
     private final String scanWorkspace;
     private final String applicationFile;
     private String installation;
@@ -53,8 +58,9 @@ public class AppScanSourceBuilder extends Builder implements SimpleBuildStep {
 
     // Fields in config.jelly must match the parameter names in the "DataBoundConstructor"
     @DataBoundConstructor
-    public AppScanSourceBuilder(String installation, boolean disableScan, String scanWorkspace, String applicationFile, boolean acceptSSL) {
+    public AppScanSourceBuilder(String installation, boolean disableScan, boolean customWorkspace, String scanWorkspace, String applicationFile, boolean acceptSSL) {	   
     	this.disableScan=disableScan;
+    	this.customWorkspace=customWorkspace; //checkbox for custom output directory
         this.scanWorkspace=scanWorkspace;
         this.applicationFile=applicationFile;
         this.installation=installation;
@@ -71,6 +77,10 @@ public class AppScanSourceBuilder extends Builder implements SimpleBuildStep {
 
     public boolean getAcceptSSL() {
         return acceptSSL;
+    }
+    
+    public boolean getCustomWorkspace() {//get Custom Workspace set by user
+        return customWorkspace;
     }
     
     public String getScanWorkspace() {
@@ -116,14 +126,15 @@ public class AppScanSourceBuilder extends Builder implements SimpleBuildStep {
 					applicationFileOk = true;
 				}
 			}
+			
+			String workSpace = "C:\\Program Files (x86)\\Jenkins\\jobs\\" + envVars.get("JOB_NAME") + "\\builds\\" + envVars.get("BUILD_NUMBER") + "\\";
+			
 			//Check that we can access the scan workspace
-			boolean scanWorkspaceOk = checkScanWorkspace(this.scanWorkspace);
+			boolean workspaceOk = checkWorkspace(workSpace);
 			
 			//Only run the scan if the workspace and application file are ok
-			if(applicationFileOk && scanWorkspaceOk){
+			if(applicationFileOk && workspaceOk){
 				logger.println("Scanning " + applicationFile + " with AppScan Source");
-				
-				//String exe = AppScanSourceInstallation.getExecutable(installation, AppScanSourceCommand.AppScanSourceCLI, node, listener, envVars);
 				
 				//Determine if we need to use acceptssl flag
 				String acceptSSLValue="";
@@ -133,26 +144,47 @@ public class AppScanSourceBuilder extends Builder implements SimpleBuildStep {
 				
 				//Build the script file we'll pass into the AppScan Source CLI
 				String cliScriptContent = "login_file " + getDescriptor().getASE_URL() + " " + getDescriptor().getLoginTokenFilePath() + " " + acceptSSLValue + System.lineSeparator();
-				cliScriptContent += "oa " + applicationFile + System.lineSeparator();
-				cliScriptContent += "sc " + scanWorkspace + System.lineSeparator();
+				cliScriptContent += "oa " + "\"" + applicationFile + "\"" + System.lineSeparator();
+				cliScriptContent += "sc "  + "\"" + workSpace + "\"" +System.lineSeparator();
 				
 				AppScanSourceExecutor.execute(run, ws, launcher, installation, node, listener, envVars, cliScriptContent);
-				/*
-				//Create a temp file with our script commands
-				FilePath tempFile = ws.createTextTempFile("temp_cli_script_", ".txt", cliScriptContent);
 				
-				//Build the command line commands with necessary parameters
-				CLIRunner runner = new CLIRunner(run, ws, launcher, listener);
-				AppScanSourceInvocation invocation = new AppScanSourceInvocation(exe, run, ws, listener); 
-				invocation.addScriptFile(tempFile);
+				boolean scanWorkspaceOk = checkScanWorkspace(this.scanWorkspace);
 				
-				//Execute command line
-				if (!invocation.execute(runner)) {
-	                throw new AbortException("AppScan Source execution failed");
-	            }			
-				//Delete the temp file after we use it
-				tempFile.delete();
-				*/
+				//Only run the scan if the workspace and application file are ok
+				if(applicationFileOk && scanWorkspaceOk){
+					logger.println("Copying assesment file to custom directory");
+				
+					//Search directory for assessment file
+					logger.println("Searching " + workSpace + " for .ozasmt file");
+					File directory = new File(workSpace);
+					File[] extMatches = directory.listFiles(new FilenameFilter()
+							{
+							@Override
+							public boolean accept(File dir, String name) {
+								// TODO Auto-generated method stub
+						
+								return name.endsWith(".ozasmt");
+								//return false;
+							}
+							});
+	    		
+					String assessmentFile;
+			
+	    			assessmentFile = extMatches[0].getAbsolutePath();
+	    			
+	    			int index = extMatches[0].toString().lastIndexOf("\\");
+	    			String fileName = extMatches[0].toString().substring(index);
+	    			logger.println("Copying " + assessmentFile + " to " + scanWorkspace);
+
+	    			Path FROM = Paths.get(assessmentFile);	
+	    			Path TO = Paths.get(scanWorkspace + "\\" + fileName);
+	    			Files.copy(FROM, TO);
+	    		}
+        		else {
+        			logger.println("Could not save assessment to custom workspace directory.  Please resolve issues with your the selected directory.");
+        		}
+				
 			} else {
 				logger.println("Please resolve issues with your application file or scan workspace configuration.");
 			}
@@ -181,33 +213,37 @@ public class AppScanSourceBuilder extends Builder implements SimpleBuildStep {
     	return false;
     }
     
-    public boolean checkApplicationFileNameExists(String filePath) {
-    	try {
-    		return new FilePath(new File(filePath)).exists();
-    	} catch (IOException e) {
-    		logger.println(filePath + " could not be found. Cannot continue.");
-    	} catch (InterruptedException e) {
-    		logger.println("AppScan Source plugin thread interrupted.");
-    	}
-    	return false;
+    public static boolean checkApplicationFileNameExists(String filePath){
+    	return new File(filePath).exists();
     }
     
     public boolean checkScanWorkspace(String jobScanWorkspace){
-    	FilePath path = new FilePath(new File(jobScanWorkspace));
-    	try {
-			if(!path.exists()){
-				logger.println("Scan Workspace does not exist.");
-				logger.println(path.getRemote());
-				return false;
-			}
-		} catch (IOException e) {
-			logger.println(jobScanWorkspace + " could not be found. Cannot continue.");
-		} catch (InterruptedException e) {
-			logger.println("AppScan Source plugin thread interrupted.");
+    	File path = new File(jobScanWorkspace);
+    	if(!path.exists()){
+			logger.println("Scan Workspace does not exist.");
+			logger.println(path.getAbsolutePath());
+			return false;
 		}
     	return true;
     }
 
+    public boolean checkWorkspace(String jobWorkspace){
+    	File path = new File(jobWorkspace);
+    	if(!path.exists()){
+			logger.println("Scan Workspace does not exist.");
+			logger.println(path.getAbsolutePath());
+			return false;
+		}
+    	return true;
+    }
+    
+    @Override
+   	public BuildStepMonitor getRequiredMonitorService() {
+   		// TODO Auto-generated method stub
+   		//return null;
+       	return BuildStepMonitor.NONE;
+   	}
+    
     @Extension // This indicates to Jenkins that this is an implementation of an extension point.
     public static final class DescriptorImpl extends BuildStepDescriptor<Builder> {
         /**
